@@ -1,0 +1,6 @@
+# requirements.txt
+azure-functions
+azure-eventhub
+requests
+xmltodict
+psycopg2-binary
