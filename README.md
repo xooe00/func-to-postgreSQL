@@ -1,189 +1,83 @@
-# 1️⃣ 목표
+# 🚀 프로젝트 개요: 실시간 방사선 및 발전소 데이터 파이프라인 구축
 
-KHNP 4개 API 데이터를
-
-```
-Function App → Event Hub(4 파티션) → Stream Analytics → ADLS
-```
-
-구조로 자동 수집·분기·저장하는 실시간 파이프라인 구축
+본 프로젝트는 **한국수력원자력(KHNP)의 공공 API 데이터**를 활용하여,  
+데이터 **수집부터 실시간 브로커링, 스트리밍 처리, 그리고 데이터 레이크 적재**에 이르는 전 과정을 **Azure 클라우드 네이티브 환경**으로 구축한 실무형 파이프라인입니다.
 
 ---
 
-# 2️⃣ 데이터 수집 계층 (Function App)
+# 🏗️ 시스템 아키텍처 (System Architecture)
 
-### ✔ 수행 내용
+전체 데이터 흐름은 **Serverless 기반의 고가용성 파이프라인**을 지향합니다.
 
-- Azure Function App (`func-khnp-collector`) 생성
-- Timer Trigger (10분 주기)
-- 4개 API 호출:
-    - weather
-    - air
-    - pwr
-    - radiorate
-- 발전소 코드:
-    - WS, KR, YK, UJ, SU
+**Ingestion Layer (Azure Functions)**  
+10분 주기 Timer Trigger를 통해 **4개 핵심 API(기상, 대기, 발전, 방사선)** 데이터를 병렬 수집합니다.
 
-### ✔ 처리 방식
+**Messaging Layer (Event Hubs)**  
+수집된 데이터를 성격에 따라 **4개의 파티션**에 명시적으로 라우팅하여 **부하를 분산하고 순서 보장성**을 확보합니다.
 
-각 API × 발전소 조합으로 이벤트 생성:
+**Streaming Layer (Stream Analytics)**  
+실시간으로 유입되는 이벤트를 스캔하여 **데이터 형식을 검증하고 가공**합니다.
 
-```json
-{
-  "api": "...",
-  "genName": "...",
-  "collected_at": "...",
-  "data": {...}
-}
-```
-
-### ✔ 파티션 고정 매핑
-
-```
-weather   → 0
-air       → 1
-pwr       → 2
-radiorate → 3
-```
-
-Event Hub 전송 시:
-
-```python
-create_batch(partition_id="0")
-```
-
-으로 명시적 라우팅
+**Storage Layer (ADLS Gen2)**  
+최종 데이터를 분석 최적화 포맷인 **Parquet**으로 변환하여 **시간 기반 파티셔닝 구조**로 적재합니다.
 
 ---
 
-# 3️⃣ 메시지 브로커 계층 (Event Hub)
+# 🛠️ 핵심 구현 상세
 
-### ✔ 구성
+### 1. 지능형 파티션 라우팅 (Manual Partitioning)
 
-- 이벤트 허브 생성
-- 파티션 4개
-- Consumer Group 별도 생성
+데이터의 병목 현상을 방지하고 후속 처리의 효율성을 위해 **API별로 파티션 넘버를 고정 매핑**했습니다.
 
-### ✔ 동작
-
-- Function App이 API별로 지정 파티션에 이벤트 전송
-- 메시지는 Retention 기간 동안 저장
+**Weather(0), Air(1), Power(2), Radiation(3)** 각 전용 파티션 할당
 
 ---
 
-# 4️⃣ 스트리밍 처리 계층 (Stream Analytics)
+### 2. 서버리스 데이터 오케스트레이션
 
-### ✔ 작업 생성
+Azure Functions를 활용해 **API 응답을 표준화된 JSON 스키마로 재구성**했습니다.
 
-- `asa-khnp-collector` 배포
-- 관리 ID(System Assigned) 활성화
-- Storage Blob Data Contributor 권한 부여
-
-### ✔ 입력
-
-- Event Hub 연결
-- JSON 직렬화
-
-### ✔ 출력
-
-ADLS Gen2 컨테이너 4개:
-
-```
-khnp-weather
-khnp-air
-khnp-pwr
-khnp-radiorate
-```
-
-파일 형식: Parquet
-
-파일 분할 기준: 최소행수 / 최대시간 설정
+각 이벤트에는 **api, genName, collected_at**과 같은 메타데이터를 포함하여 **데이터 추적성**을 높였습니다.
 
 ---
 
-# 5️⃣ 쿼리 설계
+### 3. Stream Analytics 기반의 실시간 ETL
 
-초기:
-
-```sql
-SELECT *
-```
-
-이후 수정:
-
-- `partition_id`
-- `PartitionId`
-
-제외하고 저장하도록 명시적 컬럼 선택
-
-```sql
-SELECT
-    api,
-    genName,
-    collected_at,
-    data,
-    EventProcessedUtcTime,
-    EventEnqueuedUtcTime
-```
-
-또한:
-
-- 하이픈(-) 포함 alias는 `[khnp-weather]` 형태로 작성
+단순 적재를 넘어 **ASA(Stream Analytics) 쿼리**를 통해 불필요한 시스템 필드(**partition_id 등**)를 제거하고,  
+향후 분석 레이어에서 **즉시 사용 가능한 형태로 정제**하여 **ADLS(Azure Data Lake Storage)**에 저장합니다.
 
 ---
 
-# 6️⃣ 실행 및 동작 확인
+# 💡 주요 인사이트 및 레슨런 (Key Learnings)
 
-- 작업 시작(Start → Now)
-- 상태: Running
-- ADLS에 시간 기반 폴더 생성
-- Parquet 파일 생성 확인
+**파티셔닝의 불가역성**  
+이벤트 허브의 **파티션 구조는 생성 후 수정이 불가능**하므로, 초기 설계 단계에서 **데이터 부하와 스케일링을 고려한 파티션 전략**이 필수적임을 체득했습니다.
 
 ---
 
-# 7️⃣ 오늘 배운 핵심 개념
-
-### 🔹 파티션은 수정 불가 (이미 저장된 데이터는 이동 불가)
-
-### 🔹 Stream Analytics는
-
-- 시작 시점 이후 데이터만 처리
-- Retention 내라면 과거 재처리 가능
-
-### 🔹 SELECT * EXCEPT는 지원되지 않음
-
-→ 명시적 컬럼 나열 필요
-
-### 🔹 실무 아키텍처 패턴
-
-```
-Raw 적재 (SELECT *)
-→ 분석 레이어에서 정제
-```
+**명시적 스키마 선언**  
+`SELECT *` 대신 **필요한 컬럼을 명시적으로 나열**하는 방식이 데이터 레이크의 **가독성과 유지보수 측면에서 훨씬 유리**함을 확인했습니다.
 
 ---
 
-# 8️⃣ 현재 완성된 아키텍처
-
-```
-[KHNP API]
-        ↓
-[Azure Function]
-        ↓ (partition 고정)
-[Event Hub - 4 partitions]
-        ↓
-[Stream Analytics]
-        ↓
-[ADLS Gen2 - Parquet]
-```
+**실시간 재처리(Backfill) 이해**  
+Stream Analytics의 **시작 시점 설정**을 통해 **Retention 기간 내의 과거 데이터를 재처리하는 메커니즘**을 이해하고 실습했습니다.
 
 ---
 
-# 🎯 실시간 데이터 레이크 적재 파이프라인
+# 📈 향후 확장 가능성 (Roadmap)
 
-이 구조는 그대로:
+현재 구축된 **실시간 데이터 레이크**를 기반으로 다음과 같은 확장 시나리오를 고려하고 있습니다.
 
-- Power BI 연결 가능
-- Fabric Lakehouse 확장 가능
-- RAG 인덱싱 가능
-- AI 분석 파이프라인 확장 가능
+**Power BI**  
+적재된 **Parquet 데이터**를 **실시간 대시보드로 시각화**
+
+---
+
+**Microsoft Fabric**  
+**Lakehouse**로 통합하여 **대규모 배치 분석 수행**
+
+---
+
+**AI/ML Pipeline**  
+축적된 **방사선 데이터**를 활용한 **이상 징후 탐지 및 RAG 기반 분석 시스템 구축**

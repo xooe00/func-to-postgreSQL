@@ -1,6 +1,4 @@
 # requirements.txt
 azure-functions
-azure-eventhub
-requests
-xmltodict
+azure-storage-blob
 psycopg2-binary
